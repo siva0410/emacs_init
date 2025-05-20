@@ -25,17 +25,13 @@
   :bind (
          ("C-x y" . browse-kill-ring)
          )
-  :config
-  (unless (package-installed-p 'browse-kill-ring)
-  (package-install 'browse-kill-ring))
-  (define-key global-map (kbd "C-x y") 'browse-kill-ring)
   )
 
 (use-package vertico
   :custom
   (vertico-scroll-margin 0) ;; Different scroll margin
-  (vertico-count 20) ;; Show more candidates
-  (vertico-resize t) ;; Grow and shrink the Vertico minibuffer
+  (vertico-count 15) ;; Show more candidates
+  (vertico-resize nil) ;; Grow and shrink the Vertico minibuffer
   (vertico-cycle t) ;; Enable cycling for `vertico-next/previous'
   :init
   (vertico-mode))
@@ -115,13 +111,18 @@
   ;; (corfu-popupinfo-mode)
   )
 
-;; (use-package cape
-;;   :init
-;;   (add-to-list 'completion-at-point-functions #'cape-capf-buster))
 (use-package cape
   :init
   (add-to-list 'completion-at-point-functions #'cape-dabbrev)
   (add-to-list 'completion-at-point-functions #'cape-file)
+  )
+
+;; Projctile
+(use-package projectile
+  :init
+  (setq projectile-project-search-path '("~/projects/" "~/work/"))
+  :hook (prog-mode . projectile-mode)
+  :bind ("C-c p" . projectile-command-map)
   )
 
 ;; magit
@@ -205,6 +206,15 @@
 ;;   (add-to-list 'eglot-server-programs
 ;;                '(python-mode . ("pyright-langserver" "--stdio"))))
 
+;; (use-package treesit-auto
+;; :hook (
+;; 	 (c++-mode-hook . tree-sitter-hl-mode)
+;; 	 )
+;;   :config
+;;   (setq treesit-auto-install t)
+;;   (global-treesit-auto-mode)
+;;   (setq treesit-font-lock-level 4))
+
 (use-package emacs
   :init
   (add-to-list 'default-frame-alist '(fullscreen . maximized)) ; or fullboth
@@ -226,17 +236,19 @@
   (setq make-backup-files nil)
   (setq auto-save-default nil)
   (setq ring-bell-function 'ignore)
-  ;; (defalias 'yes-or-no-p 'y-or-n-p)
+  (defalias 'yes-or-no-p 'y-or-n-p)
   
   ;; scratch buffer
   (setq initial-scratch-message nil)
-
-  :bind (("C-h" . delete-backward-char)
+  
+  :bind (
+	 ("C-h" . delete-backward-char)
          ("C-t" . other-window-or-split)
          ("C-;" . comment-dwim)
          ("C-x C-d" . dired-jump)
 	 ("C-a" . my-smart-beginning-of-line)
-	 ("C-e" . my-smart-end-of-line))
+	 ("C-e" . my-smart-end-of-line)
+	 )
   :config
   (load-theme 'doom-dracula t)
   )
