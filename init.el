@@ -215,6 +215,19 @@
 ;;   (global-treesit-auto-mode)
 ;;   (setq treesit-font-lock-level 4))
 
+(use-package org-modern
+  :hook (org-mode . org-modern-mode))
+
+(use-package markdown-mode
+  :mode ("\\.md\\'" . markdown-mode)
+  :custom
+  (markdown-command "pandoc"))
+
+(use-package ox-gfm
+  :config
+  (defalias 'org-md-export-to-markdown 'org-gfm-export-to-markdown)
+  (defalias 'org-md-export-as-markdown 'org-gfm-export-as-markdown))
+
 (use-package emacs
   :init
   (add-to-list 'default-frame-alist '(fullscreen . maximized)) ; or fullboth

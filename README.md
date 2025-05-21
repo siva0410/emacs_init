@@ -6,6 +6,9 @@
 ## vtermのインストール
 * `sudo apt install cmake libvterm-dev`
 
+## pandocのインストール
+* `sudo apt install pandoc`
+
 ## 特殊フォントのインストール
 * `M-x all-the-icons-install-fonts`
 * `M-x nerd-icons-install-fonts`
