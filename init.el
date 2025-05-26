@@ -214,6 +214,11 @@
 ;;   (setq treesit-auto-install t)
 ;;   (global-treesit-auto-mode)
 ;;   (setq treesit-font-lock-level 4))
+(use-package org
+  :ensure nil
+  :config
+  (setq browse-url-browser-function 'eww-browse-url) ;; orgリンクをewwで開く
+)
 
 (use-package org-modern
   :hook (org-mode . org-modern-mode))
@@ -228,11 +233,30 @@
   (defalias 'org-md-export-to-markdown 'org-gfm-export-to-markdown)
   (defalias 'org-md-export-as-markdown 'org-gfm-export-as-markdown))
 
+;; eww config
+(use-package shrface
+  :hook (eww-after-render . shrface-mode))
+
+(use-package engine-mode
+  :config
+  (engine-mode t)
+  (defengine google
+    "https://www.google.com/search?q=%s"
+    :browser 'eww-browse-url)
+  (defengine github
+    "https://github.com/search?q=%s"
+    :browser 'eww-browse-url))
+
 (use-package emacs
   :init
   (add-to-list 'default-frame-alist '(fullscreen . maximized)) ; or fullboth
   ;;; Font
-  (add-to-list 'default-frame-alist' (font . "DejaVu Sans Mono-14"))  
+  ;; (add-to-list 'default-frame-alist' (font . "DejaVu Sans Mono-14"))
+  (set-face-attribute 'default nil
+                    :family "Monaspace Neon"
+                    :height 140) ;; 数値はフォントサイズ（100 = 10pt）
+  (set-fontset-font t 'japanese-jisx0208 "Noto Sans CJK JP")
+
   ;; (add-to-list 'default-frame-alist
   ;;              '(alpha 1 1)))
   

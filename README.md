@@ -9,6 +9,14 @@
 ## pandocのインストール
 * `sudo apt install pandoc`
 
+## フォントのインストール
+* `mkdir ~/.local/share/fonts/monaspace`
+* `cd ~/.local/share/fonts/monaspace`
+* `wget https://github.com/githubnext/monaspace/releases/download/v1.200/monaspace-v1.200.zip`
+* `unzip monaspace-v1.200.zip`
+* `fc-cache -fv`
+* `fc-list | grep monaspace` (確認)
+
 ## 特殊フォントのインストール
 * `M-x all-the-icons-install-fonts`
 * `M-x nerd-icons-install-fonts`
