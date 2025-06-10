@@ -140,6 +140,7 @@
   (setq vterm-max-scrollback 10000)
   (setq vterm-buffer-name-string "vterm: %s")
   (define-key vterm-mode-map (kbd "C-t") 'other-window-or-split)
+  (define-key vterm-mode-map (kbd "C-h") 'vterm-send-backspace)
   )
 
 ;;    +---------------------------------------------+
@@ -192,6 +193,7 @@
   :hook ((python-mode . eglot-ensure)
          (c-mode . eglot-ensure)
          (c++-mode . eglot-ensure)
+	 (asm-mode . eglot-ensure)
          ;; (go-mode . eglot-ensure)
          ;; (rust-mode . eglot-ensure)
          )
@@ -200,7 +202,13 @@
                '(python-mode . ("pyright-langserver" "--stdio")))
   (add-to-list 'eglot-server-programs
                '((c-mode c++-mode) . ("clangd")))
+  (add-to-list 'eglot-server-programs
+		'(asm-mode . ("asm-lsp")))
   )
+
+;; Pythonの仮想環境のパスを追加
+(use-package pyvenv
+  :hook (python-mode . pyvenv-track-virtualenv))
 
 ;; (with-eval-after-load 'eglot
 ;;   (add-to-list 'eglot-server-programs
@@ -220,8 +228,8 @@
   (setq browse-url-browser-function 'eww-browse-url) ;; orgリンクをewwで開く
 )
 
-(use-package org-modern
-  :hook (org-mode . org-modern-mode))
+;; (use-package org-modern
+;;   :hook (org-mode . org-modern-mode))
 
 (use-package markdown-mode
   :mode ("\\.md\\'" . markdown-mode)
@@ -249,7 +257,7 @@
 
 (use-package emacs
   :init
-  (add-to-list 'default-frame-alist '(fullscreen . maximized)) ; or fullboth
+  (add-to-list 'default-frame-alist '(fullscreen . fullboth)) ; maximized or fullboth
   ;;; Font
   ;; (add-to-list 'default-frame-alist' (font . "DejaVu Sans Mono-14"))
   (set-face-attribute 'default nil
@@ -262,9 +270,10 @@
   
   (setq inhibit-startup-message t)
   (setq frame-title-format "%f")
-  (global-display-line-numbers-mode t)
+  ;; (global-display-line-numbers-mode t)
   (tool-bar-mode 0)
-  (menu-bar-mode 0)  
+  (menu-bar-mode 0)
+  (scroll-bar-mode 0)
   
   (setq custom-file (expand-file-name "custom.el" user-emacs-directory))
   (when (file-exists-p custom-file)
@@ -277,18 +286,35 @@
   
   ;; scratch buffer
   (setq initial-scratch-message nil)
+  (add-hook 'asm-mode-hook
+          (lambda ()
+            (setq asm-indent-level 4)
+            (setq indent-line-function #'my-asm-indent-line)))
+  (server-start)
   
   :bind (
 	 ("C-h" . delete-backward-char)
          ("C-t" . other-window-or-split)
+	 ("C-x C-t" . window-swap-states)
          ("C-;" . comment-dwim)
          ("C-x C-d" . dired-jump)
 	 ("C-a" . my-smart-beginning-of-line)
 	 ("C-e" . my-smart-end-of-line)
+	 ("C-x C-n" . display-line-numbers-mode)
+	 ("C-x M-n" . global-display-line-numbers-mode)
 	 )
   :config
   (load-theme 'doom-dracula t)
   )
+;;; ------------------------------------------------------------------
+;;; 自作関数
+(defun my-asm-indent-line ()
+  "カスタムアセンブリ整形"
+  (interactive)
+  (beginning-of-line)
+  (if (looking-at "^[[:space:]]*[a-zA-Z0-9_]+:") ; ラベル行
+      (indent-line-to 0)
+    (indent-line-to asm-indent-level)))
 
 (defvar my-smart-jump-state nil
   "Stores state for smart beginning/end of line navigation.")
@@ -329,3 +355,20 @@
   (when (one-window-p)
     (split-window-horizontally))
   (other-window 1))
+
+
+;; (defun my/vterm-gdb (cmd)
+;;   "Launch gdb in vterm with CMD."
+;;   (interactive "sGDB command: ")
+;;   (let ((buffer (generate-new-buffer "*vterm-gdb*")))
+;;     (cmd (pylist->cmd cmd)))
+;;   (vterm buffer)
+;;   (vterm-send-string cmd)
+;;   (vterm-send-return))
+
+(defun my/vterm-gdb (cmd)
+  "vterm で PYLIST-STR に対応するコマンドを実行する。"
+  (other-window-or-split)
+  (vterm)
+  (vterm-send-string (concat cmd "&& exit"))
+  (vterm-send-return))
