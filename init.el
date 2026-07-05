@@ -27,6 +27,17 @@
          )
   )
 
+;; Ansi-Color
+(use-package compile
+  :ensure nil
+  :hook
+  (compilation-filter . my/colorize-compilation-buffer)
+  :config
+  (require 'ansi-color)
+
+  (defun my/colorize-compilation-buffer ()
+    (ansi-color-apply-on-region compilation-filter-start (point))))
+
 (use-package vertico
   :custom
   (vertico-scroll-margin 0) ;; Different scroll margin
@@ -119,8 +130,7 @@
 
 ;; Projctile
 (use-package projectile
-  :init
-  (setq projectile-project-search-path '("~/projects/" "~/work/"))
+  :custom (projectile-project-root-files '(".project" ".git" "compile_commands.json"))
   :hook (prog-mode . projectile-mode)
   :bind ("C-c p" . projectile-command-map)
   )
@@ -186,12 +196,17 @@
 ;;    +---------------------------------------------+
 ;;    |                System Config                |
 ;;    +---------------------------------------------+
+
+(use-package arduino-mode
+  :mode ("\\.ino\\'" . arduino-mode))
+
 ;;; LSP
 (use-package eglot
   :ensure nil
   :hook ((python-mode . eglot-ensure)
          (c-mode . eglot-ensure)
          (c++-mode . eglot-ensure)
+	 (arduino-mode . eglot-ensure)
          ;; (go-mode . eglot-ensure)
          ;; (rust-mode . eglot-ensure)
          )
@@ -199,7 +214,7 @@
   (add-to-list 'eglot-server-programs
                '(python-mode . ("pyright-langserver" "--stdio")))
   (add-to-list 'eglot-server-programs
-               '((c-mode c++-mode) . ("clangd")))
+               '((c-mode c++-mode arduino-mode) . ("clangd")))
   )
 
 ;; (with-eval-after-load 'eglot
@@ -215,8 +230,8 @@
 ;;   (global-treesit-auto-mode)
 ;;   (setq treesit-font-lock-level 4))
 
-(use-package org-modern
-  :hook (org-mode . org-modern-mode))
+;; (use-package org-modern
+;;   :hook (org-mode . org-modern-mode))
 
 (use-package markdown-mode
   :mode ("\\.md\\'" . markdown-mode)
@@ -230,9 +245,9 @@
 
 (use-package emacs
   :init
-  (add-to-list 'default-frame-alist '(fullscreen . maximized)) ; or fullboth
+  (add-to-list 'default-frame-alist '(fullboth . maximized)) ; or fullboth
   ;;; Font
-  (add-to-list 'default-frame-alist' (font . "DejaVu Sans Mono-14"))  
+  (add-to-list 'default-frame-alist' (font . "DejaVu Sans Mono-16"))  
   ;; (add-to-list 'default-frame-alist
   ;;              '(alpha 1 1)))
   
@@ -305,3 +320,50 @@
   (when (one-window-p)
     (split-window-horizontally))
   (other-window 1))
+
+
+;;    +---------------------------------------------+
+;;    |                Language Config              |
+;;    +---------------------------------------------+
+(set-face-attribute 'default nil
+                    :family "UDEV Gothic"
+                    :height 160)
+
+(set-fontset-font t 'japanese-jisx0208
+                  (font-spec :family "UDEV Gothic"))
+
+(set-fontset-font t 'katakana-jisx0201
+                  (font-spec :family "UDEV Gothic"))
+
+(use-package ddskk
+  :ensure t
+  :init
+  (setq default-input-method "japanese-skk")
+  :config
+  ;; 個人辞書
+  (global-set-key (kbd "C-x j") 'toggle-input-method)
+  (setq skk-jisyo "~/.skk-jisyo")
+  ;; DDSKK標準のカーソル色変更機能を使う
+  (setq skk-use-color-cursor t)
+  (setq skk-cursor-latin-color "lightskyblue")
+  (setq skk-cursor-hiragana-color "lightpink")
+  (setq skk-cursor-katakana-color "lightgreen")
+  ;; 変換候補をインライン表示
+  (setq skk-show-inline t)
+  ;; 句読点
+  (setq skk-kutouten-type 'jp)
+  (setq skk-rom-kana-rule-list
+        (append
+         '(("!" nil "!")
+           ("?" nil "?")
+           (":" nil ":")
+           (";" nil ";")
+           ("(" nil "(")
+           (")" nil ")")
+           ("[" nil "[")
+           ("]" nil "]")
+           ("{" nil "{")
+           ("}" nil "}")
+           ("'" nil "'")
+           ("\"" nil "\""))
+         skk-rom-kana-rule-list)))
