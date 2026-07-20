@@ -246,8 +246,6 @@
 (use-package emacs
   :init
   (add-to-list 'default-frame-alist '(fullboth . maximized)) ; or fullboth
-  ;;; Font
-  (add-to-list 'default-frame-alist' (font . "DejaVu Sans Mono-16"))  
   ;; (add-to-list 'default-frame-alist
   ;;              '(alpha 1 1)))
   
@@ -326,14 +324,20 @@
 ;;    |                Language Config              |
 ;;    +---------------------------------------------+
 (set-face-attribute 'default nil
-                    :family "UDEV Gothic"
+                    :family "DejaVu Sans Mono"
                     :height 160)
 
-(set-fontset-font t 'japanese-jisx0208
-                  (font-spec :family "UDEV Gothic"))
+;; カラー絵文字。
+(set-fontset-font t 'emoji
+                  (font-spec :family "Noto Color Emoji") nil 'prepend)
 
-(set-fontset-font t 'katakana-jisx0201
-                  (font-spec :family "UDEV Gothic"))
+;; Nerd Fontが使う私用領域のアイコン。
+(dolist (range '((#xe000 . #xf8ff)
+                 (#xf0000 . #xffffd)
+                 (#x100000 . #x10fffd)))
+  (set-fontset-font t range
+                    (font-spec :family "Symbols Nerd Font Mono")
+                    nil 'prepend))
 
 (use-package ddskk
   :ensure t
@@ -367,3 +371,150 @@
            ("'" nil "'")
            ("\"" nil "\""))
          skk-rom-kana-rule-list)))
+
+(use-package org
+  :ensure nil
+
+  :preface
+  ;; PlantUMLだけBabel実行時の確認を省略する。
+  ;; ShellやPythonなど、ほかの言語では確認を残す。
+  (defun my-org-confirm-babel-evaluate (lang _body)
+    (not (string= lang "plantuml")))
+
+  ;; Babel実行後、Org内の画像を再表示する。
+  (defun my-org-redisplay-inline-images (&rest _)
+    (when (derived-mode-p 'org-mode)
+      (org-redisplay-inline-images)))
+
+  :custom
+  (org-plantuml-jar-path "/usr/share/plantuml/plantuml.jar")
+  (org-plantuml-exec-mode 'jar)
+  (org-confirm-babel-evaluate
+   #'my-org-confirm-babel-evaluate)
+  (org-startup-with-inline-images t)
+  ;; C-c ' ではOrgと同じウィンドウにソース編集バッファを開く。
+  (org-src-window-setup 'current-window)
+
+  :config
+  ;; Org BabelでPlantUMLを有効化する。
+  (org-babel-do-load-languages
+   'org-babel-load-languages
+   '((plantuml . t)))
+
+  ;; 設定を再評価してもadviceを重複登録しない。
+  (unless
+      (advice-member-p
+       #'my-org-redisplay-inline-images
+       #'org-babel-execute-src-block)
+    (advice-add
+     #'org-babel-execute-src-block
+     :after
+     #'my-org-redisplay-inline-images)))
+
+
+(use-package plantuml-mode
+  :ensure t
+  :after org
+
+  :preface
+  ;; plantuml-mode 1.7.0 は、新しいCAPFを定義している一方で、
+  ;; major mode初期化時に古い対話コマンドを誤登録している。
+  ;; Corfuの自動補完から古いコマンドが繰り返し呼ばれると、
+  ;; *Completions* が開き、削除した文字まで再挿入されるため修正する。
+  (defun my-plantuml-fix-completion-at-point-function ()
+    (setq-local completion-at-point-functions
+                '(plantuml-completion-at-point-function)))
+
+  :hook
+  (plantuml-mode . my-plantuml-fix-completion-at-point-function)
+
+  :mode
+  (("\\.puml\\'"     . plantuml-mode)
+   ("\\.plantuml\\'" . plantuml-mode))
+
+  :custom
+  (plantuml-jar-path "/usr/share/plantuml/plantuml.jar")
+  (plantuml-default-exec-mode 'jar)
+  (plantuml-output-type "svg")
+
+  :config
+  ;; C-c C-c のPlantUMLプレビューだけを右側に表示する。
+  (add-to-list
+   'display-buffer-alist
+   '("\\`\\*PLANTUML Preview\\*\\'"
+     (display-buffer-reuse-window display-buffer-in-direction)
+     (direction . right)
+     (window-width . 0.5)))
+
+  ;; OrgのPlantUMLブロックを C-c ' で開いたとき、
+  ;; plantuml-modeを使用する。
+  (add-to-list
+   'org-src-lang-modes
+   '("plantuml" . plantuml)))
+
+;;    +---------------------------------------------+
+;;    |                Agetn Config                 |
+;;    +---------------------------------------------+
+(use-package agent-shell
+  :ensure t
+
+  :preface
+  (define-prefix-command 'my-agent-shell-command-map)
+
+  ;; shell-makerの履歴にUTF-8の日本語がunibyte文字列として保存された場合、
+  ;; M-pや履歴検索で正しく表示できるmultibyte文字列へ戻す。
+  (defun my-agent-shell-normalize-history (&rest _)
+    (when (and (boundp 'comint-input-ring)
+               (ring-p comint-input-ring))
+      (let ((normalized-ring (make-ring (ring-size comint-input-ring))))
+        (dolist (item (reverse (ring-elements comint-input-ring)))
+          (let ((plain-item (substring-no-properties item)))
+            (ring-insert
+             normalized-ring
+             (if (multibyte-string-p plain-item)
+                 plain-item
+               (decode-coding-string plain-item 'utf-8)))))
+        (setq comint-input-ring normalized-ring))))
+
+  (defun my-agent-shell-enable-skk-for-codex ()
+    "Codexの入力欄をDDSKKのかなモードで開始する。"
+    (when (eq (map-nested-elt
+               agent-shell--state '(:agent-config :identifier))
+              'codex)
+      (skk-mode 1)))
+
+  :hook
+  (agent-shell-mode . my-agent-shell-enable-skk-for-codex)
+
+  :bind
+  (("C-c a" . my-agent-shell-command-map)
+   :map my-agent-shell-command-map
+   ("x" . agent-shell-openai-start-codex)
+   ("c" . agent-shell-anthropic-start-claude-code))
+
+  :custom
+  ;; 大きな画像付きヘッダーを表示しない。
+  ;; Codex名やモデル名は通常のモードライン側に表示される。
+  (agent-shell-header-style nil)
+  ;; 起動時のASCIIアートとウェルカムメッセージを表示しない。
+  (agent-shell-show-welcome-message nil)
+  ;; 使用フォントにないUnicode文字を使う処理中アニメーションを隠す。
+  (agent-shell-show-busy-indicator nil)
+  ;; 起動時に選択範囲やカーソル行などをプロンプトへ自動挿入しない。
+  (agent-shell-context-sources nil)
+  ;; 起動時に全ての履歴を表示する。
+  :custom
+  (agent-shell-session-restore-verbosity 'full)
+
+  :config
+  ;; 読み込み後に既存履歴を修復し、保存前にも同じ形式へ統一する。
+  (unless (advice-member-p
+           #'my-agent-shell-normalize-history
+           #'shell-maker--read-input-ring-history)
+    (advice-add #'shell-maker--read-input-ring-history
+                :after #'my-agent-shell-normalize-history))
+  (unless (advice-member-p
+           #'my-agent-shell-normalize-history
+           #'shell-maker--write-input-ring-history)
+    (advice-add #'shell-maker--write-input-ring-history
+                :before #'my-agent-shell-normalize-history)))
