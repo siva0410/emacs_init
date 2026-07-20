@@ -150,6 +150,7 @@
   (setq vterm-max-scrollback 10000)
   (setq vterm-buffer-name-string "vterm: %s")
   (define-key vterm-mode-map (kbd "C-t") 'other-window-or-split)
+  (define-key vterm-mode-map (kbd "C-h") 'vterm-send-backspace)
   )
 
 ;;    +---------------------------------------------+
@@ -217,6 +218,10 @@
                '((c-mode c++-mode arduino-mode) . ("clangd")))
   )
 
+;; Pythonの仮想環境のパスを追加
+(use-package pyvenv
+  :hook (python-mode . pyvenv-track-virtualenv))
+
 ;; (with-eval-after-load 'eglot
 ;;   (add-to-list 'eglot-server-programs
 ;;                '(python-mode . ("pyright-langserver" "--stdio"))))
@@ -229,6 +234,11 @@
 ;;   (setq treesit-auto-install t)
 ;;   (global-treesit-auto-mode)
 ;;   (setq treesit-font-lock-level 4))
+(use-package org
+  :ensure nil
+  :config
+  (setq browse-url-browser-function 'eww-browse-url) ;; orgリンクをewwで開く
+)
 
 ;; (use-package org-modern
 ;;   :hook (org-mode . org-modern-mode))
@@ -243,6 +253,20 @@
   (defalias 'org-md-export-to-markdown 'org-gfm-export-to-markdown)
   (defalias 'org-md-export-as-markdown 'org-gfm-export-as-markdown))
 
+;; eww config
+(use-package shrface
+  :hook (eww-after-render . shrface-mode))
+
+(use-package engine-mode
+  :config
+  (engine-mode t)
+  (defengine google
+    "https://www.google.com/search?q=%s"
+    :browser 'eww-browse-url)
+  (defengine github
+    "https://github.com/search?q=%s"
+    :browser 'eww-browse-url))
+
 (use-package emacs
   :init
   (add-to-list 'default-frame-alist '(fullboth . maximized)) ; or fullboth
@@ -251,9 +275,10 @@
   
   (setq inhibit-startup-message t)
   (setq frame-title-format "%f")
-  (global-display-line-numbers-mode t)
+  ;; (global-display-line-numbers-mode t)
   (tool-bar-mode 0)
-  (menu-bar-mode 0)  
+  (menu-bar-mode 0)
+  (scroll-bar-mode 0)
   
   (setq custom-file (expand-file-name "custom.el" user-emacs-directory))
   (when (file-exists-p custom-file)
@@ -266,18 +291,35 @@
   
   ;; scratch buffer
   (setq initial-scratch-message nil)
+  (add-hook 'asm-mode-hook
+          (lambda ()
+            (setq asm-indent-level 4)
+            (setq indent-line-function #'my-asm-indent-line)))
+  (server-start)
   
   :bind (
 	 ("C-h" . delete-backward-char)
          ("C-t" . other-window-or-split)
+	 ("C-x C-t" . window-swap-states)
          ("C-;" . comment-dwim)
          ("C-x C-d" . dired-jump)
 	 ("C-a" . my-smart-beginning-of-line)
 	 ("C-e" . my-smart-end-of-line)
+	 ("C-x C-n" . display-line-numbers-mode)
+	 ("C-x M-n" . global-display-line-numbers-mode)
 	 )
   :config
   (load-theme 'doom-dracula t)
   )
+;;; ------------------------------------------------------------------
+;;; 自作関数
+(defun my-asm-indent-line ()
+  "カスタムアセンブリ整形"
+  (interactive)
+  (beginning-of-line)
+  (if (looking-at "^[[:space:]]*[a-zA-Z0-9_]+:") ; ラベル行
+      (indent-line-to 0)
+    (indent-line-to asm-indent-level)))
 
 (defvar my-smart-jump-state nil
   "Stores state for smart beginning/end of line navigation.")
