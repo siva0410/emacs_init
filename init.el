@@ -297,9 +297,9 @@
             (setq indent-line-function #'my-asm-indent-line)))
   (server-start)
   
+  :bind* (("C-t" . other-window-or-split))
   :bind (
 	 ("C-h" . delete-backward-char)
-         ("C-t" . other-window-or-split)
 	 ("C-x C-t" . window-swap-states)
          ("C-;" . comment-dwim)
          ("C-x C-d" . dired-jump)
@@ -356,6 +356,7 @@
     (setq this-command nil))))
 
 (defun other-window-or-split ()
+  "Move to the next window, splitting horizontally when only one exists."
   (interactive)
   (when (one-window-p)
     (split-window-horizontally))
