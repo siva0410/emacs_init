@@ -524,6 +524,52 @@
    '("plantuml" . plantuml)))
 
 ;;    +---------------------------------------------+
+;;    |                 GPTel Config                |
+;;    +---------------------------------------------+
+(use-package gptel
+  :ensure t
+  :demand t
+
+  :preface
+  (define-prefix-command 'my-gptel-command-map)
+
+  (defun my-gptel-show-context ()
+    "gptelに追加されているコンテキストの一覧を表示する。"
+    (interactive)
+    (require 'gptel-context)
+    (gptel-context--buffer-setup nil nil gptel-context))
+
+  (defun my-gptel-clear-context ()
+    "gptelに追加されているコンテキストをすべて削除する。"
+    (interactive)
+    (require 'gptel-context)
+    (gptel-context-remove-all t))
+
+  :bind
+  (("C-c g" . my-gptel-command-map)
+   :map my-gptel-command-map
+   ("g" . gptel)
+   ("a" . gptel-add)
+   ("c" . my-gptel-show-context)
+   ("s" . gptel-send)
+   ("f" . gptel-add-file)
+   ("d" . my-gptel-clear-context)
+   ("k" . gptel-abort)
+   ("r" . gptel-rewrite))
+
+  :init
+  (setq gptel-model 'gpt-5.4-mini)
+
+  :custom
+  ;; ブラウザからlocalhostへ戻れない環境でも使えるデバイスコード認証。
+  (gptel-openai-oauth-login-method 'device)
+
+  :config
+  ;; ChatGPT Plus/Proの契約をOpenAI OAuth経由で利用する。
+  (setq gptel-backend
+        (gptel-make-openai-oauth "OpenAI-sub")))
+
+;;    +---------------------------------------------+
 ;;    |                Agetn Config                 |
 ;;    +---------------------------------------------+
 (use-package agent-shell
