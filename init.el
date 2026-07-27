@@ -252,7 +252,21 @@
 (use-package markdown-mode
   :mode ("\\.md\\'" . markdown-mode)
   :custom
-  (markdown-command "pandoc"))
+  (markdown-command "pandoc")
+  ;; ```cpp など、言語を指定したコードブロックを対応するmajor modeで色付けする。
+  (markdown-fontify-code-blocks-natively t)
+  :custom-face
+  ;; インラインコード (`code`) はテーマの背景色になじませ、黄色で表示する。
+  (markdown-inline-code-face
+   ((t (:foreground "#ffd400" :background "#0c0a20"))))
+  ;; 表はインラインコードと区別できるように、シアンで表示する。
+  (markdown-table-face
+   ((t (:foreground "#42c6ff" :background "#0c0a20"))))
+  ;; コードブロックの明るい背景をなくす。
+  (markdown-code-face
+   ((t (:background "#0c0a20"))))
+  (markdown-pre-face
+   ((t (:background "#0c0a20")))))
 
 (use-package ox-gfm
   :config
@@ -314,6 +328,14 @@
 	 ("C-x C-n" . display-line-numbers-mode)
 	 ("C-x M-n" . global-display-line-numbers-mode)
 	 )
+  :custom-face
+  ;; コメント関連のfaceを見分けやすい色で統一する。
+  (font-lock-comment-face
+   ((t (:foreground "#7fbf7f"))))
+  (font-lock-comment-delimiter-face
+   ((t (:foreground "#7fbf7f"))))
+  (font-lock-doc-face
+   ((t (:foreground "#7fbf7f"))))
   :config
   (load-theme 'doom-outrun-electric t)
   )
