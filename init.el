@@ -8,9 +8,9 @@
 ;; (package-initialize)
 
 (setq package-archives
-      '(("gnu" . "http://elpa.gnu.org/packages/")
-    ("melpa" . "http://melpa.org/packages/")
-    ("org" . "http://orgmode.org/elpa/")))
+      '(("gnu" . "https://elpa.gnu.org/packages/")
+        ("melpa" . "https://melpa.org/packages/")
+        ("org" . "https://orgmode.org/elpa/")))
 
 (unless package-archive-contents
   (package-refresh-contents))
@@ -152,6 +152,12 @@
   (define-key vterm-mode-map (kbd "C-t") 'other-window-or-split)
   (define-key vterm-mode-map (kbd "C-h") 'vterm-send-backspace)
   )
+
+;; PDF (DocView)
+(use-package doc-view
+  :ensure nil
+  :bind (:map doc-view-mode-map
+              ("C-t" . other-window-or-split)))
 
 ;;    +---------------------------------------------+
 ;;    |                  Key Config                 |
@@ -309,7 +315,7 @@
 	 ("C-x M-n" . global-display-line-numbers-mode)
 	 )
   :config
-  (load-theme 'doom-dracula t)
+  (load-theme 'doom-outrun-electric t)
   )
 ;;; ------------------------------------------------------------------
 ;;; 自作関数
@@ -368,7 +374,7 @@
 ;;    +---------------------------------------------+
 (set-face-attribute 'default nil
                     :family "DejaVu Sans Mono"
-                    :height 160)
+                    :height 140)
 
 ;; カラー絵文字。
 (set-fontset-font t 'emoji
@@ -519,15 +525,15 @@
                (decode-coding-string plain-item 'utf-8)))))
         (setq comint-input-ring normalized-ring))))
 
-  (defun my-agent-shell-enable-skk-for-codex ()
-    "Codexの入力欄をDDSKKのかなモードで開始する。"
-    (when (eq (map-nested-elt
-               agent-shell--state '(:agent-config :identifier))
-              'codex)
+  (defun my-agent-shell-enable-skk-for-coding-agents ()
+    "CodexとClaude Codeの入力欄をDDSKKのかなモードで開始する。"
+    (when (memq (map-nested-elt
+                 agent-shell--state '(:agent-config :identifier))
+                '(codex claude-code))
       (skk-mode 1)))
 
   :hook
-  (agent-shell-mode . my-agent-shell-enable-skk-for-codex)
+  (agent-shell-mode . my-agent-shell-enable-skk-for-coding-agents)
 
   :bind
   (("C-c a" . my-agent-shell-command-map)
@@ -547,7 +553,7 @@
   (agent-shell-context-sources nil)
   ;; 起動時に全ての履歴を表示する。
   :custom
-  (agent-shell-session-restore-verbosity 'full)
+  (agent-shell-session-restore-verbosity 'last)
 
   :config
   ;; 読み込み後に既存履歴を修復し、保存前にも同じ形式へ統一する。
