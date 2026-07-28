@@ -299,6 +299,11 @@
   (tool-bar-mode 0)
   (menu-bar-mode 0)
   (scroll-bar-mode 0)
+  ;; C-x { などの後は、C-xを付け直さずにウィンドウサイズを微調整する。
+  (repeat-mode 1)
+  ;; { は横幅を広げ、} は横幅を縮める。
+  (keymap-set resize-window-repeat-map "{" #'enlarge-window-horizontally)
+  (keymap-set resize-window-repeat-map "}" #'shrink-window-horizontally)
   
   (setq custom-file (expand-file-name "custom.el" user-emacs-directory))
   (when (file-exists-p custom-file)
@@ -321,6 +326,8 @@
   :bind (
 	 ("C-h" . delete-backward-char)
 	 ("C-x C-t" . window-swap-states)
+         ("C-x {" . enlarge-window-horizontally)
+         ("C-x }" . shrink-window-horizontally)
          ("C-;" . comment-dwim)
          ("C-x C-d" . dired-jump)
 	 ("C-a" . my-smart-beginning-of-line)
@@ -545,6 +552,24 @@
     (require 'gptel-context)
     (gptel-context-remove-all t))
 
+  (defun my-gptel-select-model ()
+    "現在のgptelバックエンドで使用するモデルを選択する。"
+    (interactive)
+    (let* ((models (gptel-backend-models gptel-backend))
+           (candidates
+            (mapcar (lambda (model)
+                      (cons (gptel--model-name model) model))
+                    models))
+           (selected-name
+            (completing-read
+             "gptel model: " candidates nil t nil nil
+             (gptel--model-name gptel-model)))
+           (selected-model (cdr (assoc selected-name candidates))))
+      (set-default 'gptel-model selected-model)
+      (setq gptel-model selected-model)
+      (run-hooks 'gptel-refresh-buffer-hook)
+      (message "gptel model: %s" selected-name)))
+
   :bind
   (("C-c g" . my-gptel-command-map)
    :map my-gptel-command-map
@@ -555,7 +580,8 @@
    ("f" . gptel-add-file)
    ("d" . my-gptel-clear-context)
    ("k" . gptel-abort)
-   ("r" . gptel-rewrite))
+   ("r" . gptel-rewrite)
+   ("m" . my-gptel-select-model))
 
   :init
   (setq gptel-model 'gpt-5.4-mini)
