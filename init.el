@@ -13,6 +13,11 @@
         ("org" . "https://orgmode.org/elpa/")))
 
 (unless package-archive-contents
+  ;; 起動時は保存済みのパッケージ一覧を読み、毎回ネットへ接続しない。
+  (package-read-all-archive-contents))
+
+;; 初回起動など、ローカルに一覧がない場合だけ取得する。
+(unless package-archive-contents
   (package-refresh-contents))
 
 (when (not (package-installed-p 'use-package))
@@ -288,6 +293,14 @@
     :browser 'eww-browse-url))
 
 (use-package emacs
+  :preface
+  (defun my-close-emacsclient-frame ()
+    "現在のemacsclientフレームだけを閉じる。"
+    (interactive)
+    (if (daemonp)
+        (delete-frame)
+      (user-error "通常起動のEmacsなので終了しません")))
+
   :init
   (add-to-list 'default-frame-alist '(fullboth . maximized)) ; or fullboth
   ;; (add-to-list 'default-frame-alist
@@ -320,9 +333,13 @@
           (lambda ()
             (setq asm-indent-level 4)
             (setq indent-line-function #'my-asm-indent-line)))
-  (server-start)
+  ;; 通常起動時だけサーバーを開始する。デーモンや既存サーバーとは重複させない。
+  (require 'server)
+  (unless (or (daemonp) (server-running-p))
+    (server-start))
   
-  :bind* (("C-t" . other-window-or-split))
+  :bind* (("C-t" . other-window-or-split)
+          ("C-x C-c" . my-close-emacsclient-frame))
   :bind (
 	 ("C-h" . delete-backward-char)
 	 ("C-x C-t" . window-swap-states)
@@ -419,6 +436,16 @@
 
 (use-package ddskk
   :ensure t
+
+  :preface
+  (defun my-ddskk-setup-color-cursor-for-frame (frame)
+    "emacsclientで作成したGUIフレームにDDSKKのカーソル色を設定する。"
+    (when (display-graphic-p frame)
+      (with-selected-frame frame
+        (ccc-setup)
+        (when (bound-and-true-p skk-mode)
+          (skk-cursor-set)))))
+
   :init
   (setq default-input-method "japanese-skk")
   :config
@@ -430,6 +457,12 @@
   (setq skk-cursor-latin-color "lightskyblue")
   (setq skk-cursor-hiragana-color "lightpink")
   (setq skk-cursor-katakana-color "lightgreen")
+  ;; デーモン起動時はGUI生成後にカーソル色管理を初期化する。
+  (add-hook 'after-make-frame-functions
+            #'my-ddskk-setup-color-cursor-for-frame)
+  ;; 設定を再評価した場合は、既存のGUIフレームにも反映する。
+  (dolist (frame (frame-list))
+    (my-ddskk-setup-color-cursor-for-frame frame))
   ;; 変換候補をインライン表示
   (setq skk-show-inline t)
   ;; 句読点
@@ -442,8 +475,8 @@
            (";" nil ";")
            ("(" nil "(")
            (")" nil ")")
-           ("[" nil "[")
-           ("]" nil "]")
+           ("[" nil "「")
+           ("]" nil "」")
            ("{" nil "{")
            ("}" nil "}")
            ("'" nil "'")
@@ -626,6 +659,16 @@
                 '(codex claude-code))
       (skk-mode 1)))
 
+  (defun my-agent-shell-refresh-skk-cursor-after-display
+      (shell-buffer &rest _)
+    "Agent Shell表示直後にDDSKKのカーソル色を反映する。"
+    (when (buffer-live-p shell-buffer)
+      (with-current-buffer shell-buffer
+        (when (and (bound-and-true-p skk-mode)
+                   (get-buffer-window shell-buffer t))
+          (with-selected-window (get-buffer-window shell-buffer t)
+            (skk-cursor-set))))))
+
   :hook
   (agent-shell-mode . my-agent-shell-enable-skk-for-coding-agents)
 
@@ -650,6 +693,13 @@
   (agent-shell-session-restore-verbosity 'last)
 
   :config
+  ;; mode hookはバッファ表示前に走るため、表示後にカーソル色を更新する。
+  (unless (advice-member-p
+           #'my-agent-shell-refresh-skk-cursor-after-display
+           #'agent-shell--display-buffer)
+    (advice-add #'agent-shell--display-buffer
+                :after #'my-agent-shell-refresh-skk-cursor-after-display))
+
   ;; 読み込み後に既存履歴を修復し、保存前にも同じ形式へ統一する。
   (unless (advice-member-p
            #'my-agent-shell-normalize-history
