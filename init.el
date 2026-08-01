@@ -135,10 +135,52 @@
 
 ;; Projctile
 (use-package projectile
-  :custom (projectile-project-root-files '(".project" ".git" "compile_commands.json"))
+  :preface
+  (defun my-projectile-switch-project-in-tabspace ()
+    "Projectileで選んだプロジェクトのtabspacesへ移動する。"
+    (tabspaces-open-or-create-project-and-workspace
+     (expand-file-name default-directory)))
+
+  :custom
+  (projectile-project-root-files '(".project" ".git" "compile_commands.json"))
+  ;; .projectileの ! 指定で、Gitにignoreされたファイルを候補へ戻す。
+  (projectile-indexing-method 'hybrid)
+  ;; C-c p pでプロジェクトごとのタブを作成・再利用する。
+  (projectile-switch-project-action
+   #'my-projectile-switch-project-in-tabspace)
   :hook (prog-mode . projectile-mode)
-  :bind ("C-c p" . projectile-command-map)
+  :bind (("C-c p" . projectile-command-map)
+         :map projectile-command-map
+         ("RET" . tab-switch)
+         ;; tabspacesで管理している次のプロジェクトタブへ移動する。
+         ("o" . tab-next))
   )
+
+;; プロジェクトごとにバッファとウィンドウ構成を分ける。
+(use-package tabspaces
+  :after projectile
+  :custom
+  (tabspaces-keymap-prefix "C-c TAB")
+  (tabspaces-default-tab "Default")
+  (tabspaces-remove-to-default t)
+  ;; C-x bは現在のconsult-buffer設定をそのまま使う。
+  (tabspaces-use-filtered-buffers-as-default nil)
+  ;; まずは現在のEmacsセッション内だけで試す。
+  (tabspaces-session nil)
+  (tabspaces-session-auto-restore nil)
+  (tabspaces-fully-resolve-paths t)
+  ;; 新しいプロジェクトタブでは、そのプロジェクトのファイルを選ぶ。
+  (tabspaces-project-switch-commands #'project-find-file)
+  ;; ワークスペース機能は使いつつ、上部のタブバーは表示しない。
+  (tab-bar-show nil)
+  :config
+  ;; Projectileに登録済みのGitプロジェクトを候補に含める。
+  (dolist (root (projectile-relevant-known-projects))
+    (when-let ((project
+                (project-current nil (expand-file-name root))))
+      (project-remember-project project)))
+  (tab-bar-mode 1)
+  (tabspaces-mode 1))
 
 ;; magit
 (use-package magit
@@ -256,6 +298,77 @@
 
 (use-package markdown-mode
   :mode ("\\.md\\'" . markdown-mode)
+
+  :preface
+  (defun my-markdown-read-image-path (&optional initial)
+    "Read an image path with file-name completion.
+Complete relative paths from the current Markdown file's directory.
+INITIAL is the initial minibuffer contents."
+    (if (and initial
+             (string-match-p
+              "\\`[[:alpha:]][[:alnum:]+.-]*://"
+              initial))
+        (read-string "Image URL: " initial)
+      ;; read-file-nameは入力を絶対パスへ展開せず返すため、
+      ;; Markdown内には入力した相対パスをそのまま挿入できる。
+      (let ((insert-default-directory nil))
+        (minibuffer-with-setup-hook
+            (lambda ()
+              (goto-char (point-max)))
+          (read-file-name "Image path: " nil nil nil initial)))))
+
+  (defun my-markdown-insert-image ()
+    "Insert an inline image, allowing an empty alt text.
+When the region contains a URL, use it as the initial image URL.
+Otherwise, use the region as the initial alt text."
+    (interactive)
+    (let* ((bounds (when (use-region-p)
+                     (cons (region-beginning) (region-end))))
+           (region-text
+            (when bounds
+              (buffer-substring-no-properties
+               (car bounds) (cdr bounds))))
+           (region-url
+            (when (and region-text
+                       (string-match markdown-regex-uri region-text))
+              (match-string 0 region-text)))
+           (url (my-markdown-read-image-path region-url))
+           (alt
+            (read-string
+             "Alt text (optional): "
+             (unless region-url region-text)))
+           (title
+            (unless markdown-disable-tooltip-prompt
+              (read-string "Title (optional): "))))
+      (when bounds
+        (delete-region (car bounds) (cdr bounds)))
+      ;; 空文字列をnilへ変換しないことで ![](URL) も挿入できる。
+      (markdown-insert-inline-image
+       alt url
+       (unless (or (null title) (string-empty-p title))
+         title))))
+
+  (defun my-markdown-insert-centered-image (url width)
+    "Insert a centered inline image with a percentage WIDTH."
+    (interactive
+     (list
+      (my-markdown-read-image-path "../assets/images/")
+      (read-number "Width (%): " 60)))
+    (insert
+     (format
+      "![](%s){style=\"display: block; width: %g%%; margin-inline: auto;\"}"
+      url width)))
+
+  :bind
+  (:map markdown-mode-map
+        ;; Orgと同じキーで通常のリンクを挿入する。
+        ("C-c C-l" . markdown-insert-link)
+        ;; 空のaltを許可する画像挿入コマンドを使用する。
+        ;; C-iはTABと同じ制御文字なので、区別できるC-c iを使用する。
+        ("C-c i" . my-markdown-insert-image)
+        ;; 中央寄せと幅指定を含む定型画像を一度に挿入する。
+        ("C-c I" . my-markdown-insert-centered-image))
+
   :custom
   (markdown-command "pandoc")
   ;; ```cpp など、言語を指定したコードブロックを対応するmajor modeで色付けする。
@@ -659,6 +772,41 @@
                 '(codex claude-code))
       (skk-mode 1)))
 
+  (defvar-local my-agent-shell-skk-mode-before-permission nil
+    "Agent Shellの承認待ち前のDDSKK入力モード。")
+
+  (defvar-local my-agent-shell-skk-permission-subscription nil
+    "DDSKKの承認入力切り替え用サブスクリプション。")
+
+  (defun my-agent-shell-handle-skk-permission-event (event)
+    "Agent Shellの承認中だけDDSKKをASCIIモードにする。"
+    (pcase (map-elt event :event)
+      ('permission-request
+       (when (and (bound-and-true-p skk-mode)
+                  (bound-and-true-p skk-j-mode)
+                  (null my-agent-shell-skk-mode-before-permission))
+         (setq my-agent-shell-skk-mode-before-permission
+               (if (bound-and-true-p skk-katakana)
+                   'katakana
+                 'hiragana))
+         ;; yや!をSKKで変換せず、承認ボタンに渡す。
+         (skk-latin-mode 1)))
+      ('permission-response
+       ;; 複数の承認がある場合は、最後の回答後に戻す。
+       (when (and my-agent-shell-skk-mode-before-permission
+                  (not (agent-shell--permission-pending-p)))
+         (let ((mode my-agent-shell-skk-mode-before-permission))
+           (setq my-agent-shell-skk-mode-before-permission nil)
+           (skk-j-mode-on (eq mode 'katakana)))))))
+
+  (defun my-agent-shell-setup-skk-permission-handling ()
+    "Agent Shellの承認イベントにDDSKK切り替え処理を登録する。"
+    (unless my-agent-shell-skk-permission-subscription
+      (setq my-agent-shell-skk-permission-subscription
+            (agent-shell-subscribe-to
+             :shell-buffer (current-buffer)
+             :on-event #'my-agent-shell-handle-skk-permission-event))))
+
   (defun my-agent-shell-refresh-skk-cursor-after-display
       (shell-buffer &rest _)
     "Agent Shell表示直後にDDSKKのカーソル色を反映する。"
@@ -670,7 +818,8 @@
             (skk-cursor-set))))))
 
   :hook
-  (agent-shell-mode . my-agent-shell-enable-skk-for-coding-agents)
+  ((agent-shell-mode . my-agent-shell-enable-skk-for-coding-agents)
+   (agent-shell-mode . my-agent-shell-setup-skk-permission-handling))
 
   :bind
   (("C-c a" . my-agent-shell-command-map)
