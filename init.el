@@ -2,6 +2,7 @@
 ;;    |                Package Install              |
 ;;    +---------------------------------------------+
 (require 'package)
+(require 'cl-lib)
 ;; (add-to-list 'package-archives '("org"   . "https://orgmode.org/elpa/"))
 ;; (add-to-list 'package-archives '("melpa" . "https://melpa.org/packages/"))
 ;; (add-to-list 'package-archives '("gnu"   . "https://elpa.gnu.org/packages/"))
@@ -14,34 +15,60 @@
 
 (unless package-archive-contents
   ;; 起動時は保存済みのパッケージ一覧を読み、毎回ネットへ接続しない。
-  (package-read-all-archive-contents))
+  (package-read-all-archive-contents)
+  ;; 初回起動など、ローカルに一覧がない場合だけ取得する。
+  (unless package-archive-contents
+    (package-refresh-contents)))
 
-;; 初回起動など、ローカルに一覧がない場合だけ取得する。
-(unless package-archive-contents
-  (package-refresh-contents))
-
-(when (not (package-installed-p 'use-package))
+(unless (package-installed-p 'use-package)
   (package-install 'use-package))
 (require 'use-package)
 (setq use-package-always-ensure t)
 
+(defun my/delete-overlays (overlays)
+  "OVERLAYSをすべて削除し、nilを返す。"
+  (mapc #'delete-overlay overlays)
+  nil)
+
+(defun my/advice-add-once (symbol where function)
+  "SYMBOLへFUNCTIONをWHERE adviceとして重複なく追加する。"
+  (unless (advice-member-p function symbol)
+    (advice-add symbol where function)))
+
+(defun my/ddskk-current-state ()
+  "現在のDDSKK入力モードを表すシンボルを返す。"
+  (when (equal current-input-method "japanese-skk")
+    (cond
+     ((bound-and-true-p skk-j-mode)
+      (if (bound-and-true-p skk-katakana) 'katakana 'hiragana))
+     ((bound-and-true-p skk-jisx0208-latin-mode) 'jisx0208-latin)
+     ((bound-and-true-p skk-abbrev-mode) 'abbrev)
+     (t 'latin))))
+
+(defun my/ddskk-restore-state (state)
+  "DDSKKをSTATEで表される入力モードへ切り替える。"
+  (pcase state
+    ('hiragana (skk-j-mode-on nil))
+    ('katakana (skk-j-mode-on t))
+    ('jisx0208-latin (skk-jisx0208-latin-mode-on))
+    ('abbrev (skk-abbrev-mode-on))
+    ('latin (skk-latin-mode-on))))
+
 ;; Kill Ring
 (use-package browse-kill-ring
-  :bind (
-         ("C-x y" . browse-kill-ring)
-         )
-  )
+  :bind ("C-x y" . browse-kill-ring))
 
 ;; Ansi-Color
 (use-package compile
   :ensure nil
+  :preface
+  (defun my/colorize-compilation-buffer ()
+    "コンパイル出力に含まれるANSIカラーを反映する。"
+    (ansi-color-apply-on-region compilation-filter-start (point)))
   :hook
   (compilation-filter . my/colorize-compilation-buffer)
   :config
-  (require 'ansi-color)
-
-  (defun my/colorize-compilation-buffer ()
-    (ansi-color-apply-on-region compilation-filter-start (point))))
+  (require 'ansi-color))
 
 (use-package vertico
   :custom
@@ -66,66 +93,417 @@
   (completion-category-overrides '((file (styles partial-completion)))))
 
 (use-package consult
-  :bind (
-         ("C-s" . consult-line)
+  :preface
+  (defvar-local my/consult-line-match-overlays nil
+    "`my-consult-line' が元バッファに表示中の一致候補。")
+
+  (defvar-local my/consult-line-source-window nil
+    "`my-consult-line' を開始したウィンドウ。")
+
+  (defvar my/consult-line-query-replace-request nil
+    "Consult Lineから置換へ引き継ぐ検索文字列。")
+
+  (defvar my/consult-line-source-input-method nil
+    "`my-consult-line' を開始したバッファの入力方式。")
+
+  (defvar my/consult-line-source-skk-state nil
+    "`my-consult-line' を開始した時点のDDSKK入力モード。")
+
+  (defvar-keymap my/consult-ripgrep-map
+    :doc "`consult-ripgrep' 専用のミニバッファキーマップ。"
+    "M-n" #'vertico-next-group
+    "M-p" #'vertico-previous-group)
+
+  (defun my/consult-line-inherit-input-method ()
+    "元バッファの入力方式とDDSKK入力モードを引き継ぐ。"
+    (when my/consult-line-source-input-method
+      (activate-input-method my/consult-line-source-input-method)
+      (when (equal my/consult-line-source-input-method "japanese-skk")
+        (my/ddskk-restore-state my/consult-line-source-skk-state))))
+
+  (defun my/consult-line-delete-match-overlays ()
+    "`my-consult-line' が作成した一致候補の表示を消す。"
+    (setq my/consult-line-match-overlays
+          (my/delete-overlays my/consult-line-match-overlays)))
+
+  (defun my/consult-line-highlight-visible-matches ()
+    "Consult Lineの表示範囲内にある一致候補を青く表示する。"
+    (my/consult-line-delete-match-overlays)
+    (when-let* ((input (minibuffer-contents-no-properties))
+                ((not (string-blank-p input)))
+                (window my/consult-line-source-window)
+                ((window-live-p window)))
+      (require 'orderless)
+      (pcase-let* ((`(,predicate . ,regexps) (orderless-compile input))
+                   (case-fold-search (orderless--ignore-case-p input)))
+        (when regexps
+          (let (overlays)
+            (with-current-buffer (window-buffer window)
+              (save-excursion
+                (goto-char (window-start window))
+                (let ((limit (copy-marker (or (window-end window t)
+                                               (point-max)))))
+                  (while (< (point) limit)
+                    (let* ((beg (line-beginning-position))
+                           (end (line-end-position))
+                           (line (buffer-substring-no-properties beg end)))
+                      (when (and (or (not predicate) (funcall predicate line))
+                                 (cl-every (lambda (regexp)
+                                             (string-match-p regexp line))
+                                           regexps))
+                        (dolist (regexp regexps)
+                          (let ((start 0))
+                            (while (and (< start (length line))
+                                        (string-match regexp line start))
+                              (let ((match-beg (match-beginning 0))
+                                    (match-end (match-end 0)))
+                                (when (< match-beg match-end)
+                                  (let ((overlay
+                                         (make-overlay (+ beg match-beg)
+                                                       (+ beg match-end))))
+                                    (overlay-put overlay 'face 'lazy-highlight)
+                                    (overlay-put overlay 'priority 1)
+                                    (overlay-put overlay 'window window)
+                                    (push overlay overlays)))
+                                (setq start (max (1+ match-beg) match-end)))))))
+                      (forward-line 1)))
+                  (set-marker limit nil))))
+            (setq my/consult-line-match-overlays overlays))))))
+
+  (defun my/consult-line-highlight-setup ()
+    "Consult Lineのミニバッファに候補強調処理を設定する。"
+    (setq-local my/consult-line-source-window (minibuffer-selected-window))
+    (my/consult-line-inherit-input-method)
+    ;; 共有されているミニバッファマップを変更しないようコピーする。
+    (use-local-map (copy-keymap (current-local-map)))
+    (keymap-set (current-local-map) "M-%"
+                #'my/consult-line-start-query-replace)
+    (my/consult-line-hide-source-cursor)
+    ;; Consultのプレビューで移動した後に、表示範囲を強調する。
+    (add-hook 'post-command-hook
+              #'my/consult-line-highlight-visible-matches t t)
+    ;; Consultがプレビュー用カーソルを表示した後、再び非表示にする。
+    (add-hook 'post-command-hook
+              #'my/consult-line-hide-source-cursor t t)
+    (add-hook 'minibuffer-exit-hook
+              #'my/consult-line-delete-match-overlays nil t))
+
+  (defun my/consult-line-hide-source-cursor ()
+    "Consult Lineの実行中だけ元バッファのカーソルを隠す。"
+    (when (window-live-p my/consult-line-source-window)
+      (with-current-buffer (window-buffer my/consult-line-source-window)
+        (setq-local cursor-in-non-selected-windows nil))))
+
+  (defun my/consult-line-start-query-replace ()
+    "Consult Lineの入力を引き継いで `query-replace' へ移る。"
+    (interactive)
+    (let ((query (minibuffer-contents-no-properties)))
+      (when (string-blank-p query)
+        (user-error "置換する検索文字列を入力してください"))
+      (setq my/consult-line-query-replace-request query)
+      (abort-recursive-edit)))
+
+  (defun my-query-replace-read-args
+      (prompt &optional initial-from parser setup)
+    "PROMPTを使って置換元・置換先・除外語を読み取る。
+INITIAL-FROMが非nilなら置換元の入力を省略する。
+PARSERは置換元を (検索語 除外語) に変換する関数である。
+SETUPは置換元を読むミニバッファの初期化関数である。"
+    (require 'replace)
+    (let* ((setup (or setup #'deactivate-input-method))
+           (from-or-pair
+            (or initial-from
+                (minibuffer-with-setup-hook setup
+                  (query-replace-read-from prompt nil))))
+           (raw-from (if (consp from-or-pair)
+                         (car from-or-pair)
+                       from-or-pair))
+           (parsed (if parser
+                       (funcall parser raw-from)
+                     (list raw-from nil)))
+           (from (car parsed))
+           (exclude (cadr parsed))
+           (to (if (consp from-or-pair)
+                   (cdr from-or-pair)
+                 (minibuffer-with-setup-hook #'deactivate-input-method
+                   (query-replace-read-to from prompt nil)))))
+      (when (string-empty-p from)
+        (user-error "置換する検索文字列を入力してください"))
+      (list from to exclude)))
+
+  (defun my/cyclic-query-replace-match-excluded-p (beg end exclude)
+    "BEGからENDの一致がEXCLUDEという文字列の一部なら非nilを返す。"
+    (when (and exclude (not (string-empty-p exclude)))
+      (save-excursion
+        (let ((line-end (line-end-position))
+              excluded)
+          (goto-char (line-beginning-position))
+          (while (and (not excluded)
+                      (search-forward exclude line-end t))
+            (setq excluded
+                  (and (<= (match-beginning 0) beg)
+                       (>= (match-end 0) end))))
+          excluded))))
+
+  (defun my/cyclic-query-replace-collect-matches
+      (from &optional buffers exclude)
+    "BUFFERS内でFROMに一致する箇所をマーカーのリストとして返す。
+BUFFERSがnilなら現在のバッファだけを検索する。
+一致箇所がEXCLUDEの一部なら候補から除外する。"
+    (let (matches)
+      (dolist (buffer (or buffers (list (current-buffer))))
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer
+            (save-excursion
+              (goto-char (point-min))
+              (while (search-forward from nil t)
+                (let ((beg (match-beginning 0))
+                      (end (match-end 0)))
+                  (unless (my/cyclic-query-replace-match-excluded-p
+                           beg end exclude)
+                    (push (cons (copy-marker beg)
+                                (copy-marker end t))
+                          matches))))))))
+      (nreverse matches)))
+
+  (defun my/cyclic-query-replace-delete-match (match)
+    "MATCHが持つマーカーを解放する。"
+    (set-marker (car match) nil)
+    (set-marker (cdr match) nil))
+
+  (defun my/cyclic-query-replace-show-matches (matches current-index)
+    "MATCHESを表示し、CURRENT-INDEXだけをピンクで強調する。"
+    (let (overlays)
+      (cl-loop for match in matches
+               for index from 0
+               for buffer = (marker-buffer (car match))
+               for beg = (marker-position (car match))
+               for end = (marker-position (cdr match))
+               when (and (buffer-live-p buffer) beg end)
+               do (with-current-buffer buffer
+                    (let ((overlay (make-overlay beg end buffer)))
+                      (overlay-put overlay 'face
+                                   (if (= index current-index)
+                                       'query-replace
+                                     'lazy-highlight))
+                      (overlay-put overlay 'priority
+                                   (if (= index current-index) 2 1))
+                      (push overlay overlays))))
+      overlays))
+
+  (defun my/cyclic-query-replace-goto-match (match)
+    "MATCHのバッファと位置を現在のウィンドウに表示する。"
+    (let ((buffer (marker-buffer (car match)))
+          (position (marker-position (car match))))
+      (unless (and (buffer-live-p buffer) position)
+        (user-error "置換候補のバッファがなくなりました"))
+      (unless (eq buffer (current-buffer))
+        (switch-to-buffer buffer))
+      (goto-char position)
+      (recenter)))
+
+  (defun my/cyclic-query-replace-file-index (matches index direction)
+    "MATCHESのINDEXからDIRECTION方向の別ファイルの先頭位置を返す。"
+    (let* ((buffers
+            (delete-dups
+             (mapcar (lambda (match)
+                       (marker-buffer (car match)))
+                     matches)))
+           (current-buffer (marker-buffer (car (nth index matches))))
+           (current-buffer-index (cl-position current-buffer buffers))
+           (target-buffer
+            (nth (mod (+ current-buffer-index direction)
+                      (length buffers))
+                 buffers)))
+      (or (cl-position-if
+           (lambda (match)
+             (eq (marker-buffer (car match)) target-buffer))
+           matches)
+          index)))
+
+  (defun my/cyclic-query-replace-add-undo-boundary (buffer)
+    "BUFFERが生きていればUndo境界を追加する。"
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (undo-boundary))))
+
+  (defun my/cyclic-query-replace-location (match project-root)
+    "MATCHの位置をPROJECT-ROOTからの相対名で返す。"
+    (when project-root
+      (let* ((buffer (marker-buffer (car match)))
+             (file (and buffer (buffer-file-name buffer))))
+        (if file
+            (file-relative-name file project-root)
+          (buffer-name buffer)))))
+
+  (defun my/cyclic-query-replace-read-key
+      (from to exclude index total location project-p)
+    "置換操作の案内を表示し、入力されたキーを返す。"
+    (read-key
+     (format
+      "Replace %s → %s%s  [%d/%d%s]  y:置換  C-n/p:候補%s  !:全置換  q:終了 "
+      from to
+      (if exclude (format "  除外:%s" exclude) "")
+      (1+ index) total
+      (if location (format " %s" location) "")
+      (if project-p "  M-n/p:ファイル" ""))))
+
+  (defun my/cyclic-query-replace-one (match from to)
+    "MATCHのFROMをTOへ置換する。"
+    (let ((buffer (marker-buffer (car match)))
+          (beg (marker-position (car match)))
+          (end (marker-position (cdr match))))
+      (when (and (buffer-live-p buffer) beg end)
+        (with-current-buffer buffer
+          (barf-if-buffer-read-only)
+          (goto-char beg)
+          (when (search-forward from end t)
+            (replace-match to (not (and case-replace case-fold-search)) t)
+            t)))))
+
+  (defun my/cyclic-query-replace
+      (from to &optional buffers project-root exclude)
+    "FROMをTOへ、前後に循環できる対話式操作で置換する。
+BUFFERSが指定された場合は複数バッファをまたいで置換する。
+PROJECT-ROOTはプロンプトに表示する相対ファイル名の基準にする。
+一致箇所がEXCLUDEの一部なら置換候補から除外する。"
+    (let* ((origin-buffer (current-buffer))
+           (origin (point))
+           (buffers (or buffers (list origin-buffer)))
+           (case-fold-search
+            (if (and case-fold-search search-upper-case)
+                (isearch-no-upper-case-p from nil)
+              case-fold-search))
+           (matches
+            (my/cyclic-query-replace-collect-matches from buffers exclude))
+           (index (or (cl-position-if
+                       (lambda (match)
+                         (and (eq (marker-buffer (car match)) origin-buffer)
+                              (>= (marker-position (car match)) origin)))
+                       matches)
+                      (cl-position-if
+                       (lambda (match)
+                         (eq (marker-buffer (car match)) origin-buffer))
+                       matches)
+                      0))
+           overlays
+           done)
+      (unless matches
+        (user-error "「%s」に一致する箇所はありません" from))
+      (mapc #'my/cyclic-query-replace-add-undo-boundary buffers)
+      (unwind-protect
+          (while (and matches (not done))
+            (setq overlays (my/delete-overlays overlays))
+            (setq overlays
+                  (my/cyclic-query-replace-show-matches matches index))
+            (let* ((current-match (nth index matches))
+                   (location (my/cyclic-query-replace-location
+                              current-match project-root)))
+              (my/cyclic-query-replace-goto-match current-match)
+              (let ((key (my/cyclic-query-replace-read-key
+                          from to exclude index (length matches)
+                          location project-root)))
+                (cond
+                 ((memq key '(?\C-n ?n))
+                  (setq index (mod (1+ index) (length matches))))
+                 ((memq key '(?\C-p ?^))
+                  (setq index (mod (1- index) (length matches))))
+                 ((and project-root (eq key ?\M-n))
+                  (setq index
+                        (my/cyclic-query-replace-file-index
+                         matches index 1)))
+                 ((and project-root (eq key ?\M-p))
+                  (setq index
+                        (my/cyclic-query-replace-file-index
+                         matches index -1)))
+                 ((memq key '(?y ?\s))
+                  (let* ((match (nth index matches))
+                         (buffer (marker-buffer (car match))))
+                    (my/cyclic-query-replace-one match from to)
+                    (setq matches (delq match matches))
+                    (my/cyclic-query-replace-delete-match match)
+                    (my/cyclic-query-replace-add-undo-boundary buffer)
+                    (when matches
+                      (setq index (mod index (length matches))))))
+                 ((eq key ?!)
+                  (dolist (match (reverse (copy-sequence matches)))
+                    (my/cyclic-query-replace-one match from to))
+                  (setq done t)
+                  (message "%d件を置換しました" (length matches)))
+                 ((memq key '(?q ?\C-g))
+                  (setq done t))
+                 (t
+                  (message "y, C-n, C-p, M-n, M-p, !, q のいずれかを押してください")
+                  (sit-for 0.7))))))
+        (my/delete-overlays overlays)
+        (mapc #'my/cyclic-query-replace-delete-match matches))))
+
+  (defun my-query-replace (&optional from)
+    "前後に循環できる対話式置換を実行する。
+FROMが指定された場合は検索文字列の入力を省略する。"
+    (interactive)
+    (pcase-let ((`(,from ,to ,_)
+                 (my-query-replace-read-args "Query replace" from)))
+      (my/cyclic-query-replace from to)))
+
+  (defun my-consult-line (&optional initial start)
+    "`consult-line' を実行し、元バッファの一致候補も強調する。
+検索中に `M-%' を押すと、入力を引き継いで置換へ移る。"
+    (interactive (list nil (not (not current-prefix-arg))))
+    (let ((source-buffer (current-buffer))
+          (cursor-local-p (local-variable-p
+                           'cursor-in-non-selected-windows))
+          (cursor-value cursor-in-non-selected-windows)
+          (my/consult-line-source-input-method current-input-method)
+          (my/consult-line-source-skk-state
+           (my/ddskk-current-state))
+          (my/consult-line-query-replace-request nil))
+      (unwind-protect
+          (condition-case nil
+              (progn
+                (setq-local cursor-in-non-selected-windows nil)
+                (minibuffer-with-setup-hook #'my/consult-line-highlight-setup
+                  (consult-line initial start)))
+            (quit
+             (unless my/consult-line-query-replace-request
+               (signal 'quit nil))))
+        (when (buffer-live-p source-buffer)
+          (with-current-buffer source-buffer
+            (if cursor-local-p
+                (setq-local cursor-in-non-selected-windows cursor-value)
+              (kill-local-variable 'cursor-in-non-selected-windows)))))
+      (when my/consult-line-query-replace-request
+        (with-current-buffer source-buffer
+          (my-query-replace my/consult-line-query-replace-request)))))
+
+  :bind (("C-s" . my-consult-line)
+         ("C-r" . my-query-replace)
+         ("M-%" . my-query-replace)
          ("C-x b" . consult-buffer)
-	 ("M-g" . consult-goto-line)
-         )
-  )
+         ("M-g" . consult-goto-line))
+  :config
+  (consult-customize consult-ripgrep
+                     :keymap my/consult-ripgrep-map))
 
 (use-package marginalia
-  ;; Bind `marginalia-cycle' locally in the minibuffer.  To make the binding
-  ;; available in the *Completions* buffer, add it to the
-  ;; `completion-list-mode-map'.
   :bind (:map minibuffer-local-map
          ("M-A" . marginalia-cycle))
-
-  ;; The :init section is always executed.
   :init
-
-  ;; Marginalia must be activated in the :init section of use-package such that
-  ;; the mode gets enabled right away. Note that this forces loading the
-  ;; package.
   (marginalia-mode))
 
 (use-package corfu
-  :bind (
-         :map corfu-map
-         ;; ("TAB" . corfu-insert)
-         ;; ("<tab>" . corfu-insert)
-         ("RET" . nil)
-         ;; ("<return>" . nil)
-	 )
-  
-  ;; Optional customizations
+  :bind (:map corfu-map
+              ("RET" . nil))
   :custom
   (corfu-auto t)
   (corfu-auto-delay 0)
   (corfu-auto-prefix 2)
-  (corfu-cycle t)                ;; Enable cycling for `corfu-next/previous'
-  ;; (corfu-quit-at-boundary nil)   ;; Never quit at completion boundary
-  ;; (corfu-quit-no-match nil)      ;; Never quit, even if there is no match
-  ;; (corfu-preview-current nil)    ;; Disable current candidate preview
-  ;; (corfu-preselect 'prompt)      ;; Preselect the prompt
-  (corfu-preselect 'first)      ;; Preselect the prompt
-  (corfu-on-exact-match nil)     ;; Configure handling of exact matches
+  (corfu-cycle t)
+  (corfu-preselect 'first)
+  (corfu-on-exact-match nil)
   (tab-always-indent 'complete)
-  
-  ;; Enable Corfu only for certain modes. See also `global-corfu-modes'.
-  ;; :hook ((prog-mode . corfu-mode)
-  ;;        (shell-mode . corfu-mode)
-  ;;        (eshell-mode . corfu-mode))
-  
   :init
-  ;; Recommended: Enable Corfu globally.  Recommended since many modes provide
-  ;; Capfs and Dabbrev can be used globally (M-/).  See also the customization
-  ;; variable `global-corfu-modes' to exclude certain modes.
-  (global-corfu-mode)
-  ;; Enable auto completion and configure quitting
-  ;; Enable optional extension modes:
-  ;; (corfu-history-mode)
-  ;; (corfu-popupinfo-mode)
-  )
+  (global-corfu-mode))
 
 (use-package cape
   :init
@@ -133,13 +511,109 @@
   (add-to-list 'completion-at-point-functions #'cape-file)
   )
 
-;; Projctile
+;; Projectile
 (use-package projectile
   :preface
   (defun my-projectile-switch-project-in-tabspace ()
     "Projectileで選んだプロジェクトのtabspacesへ移動する。"
     (tabspaces-open-or-create-project-and-workspace
      (expand-file-name default-directory)))
+
+  (defun my-project-query-replace-buffers (from project-root)
+    "PROJECT-ROOT内でFROMを含むファイルのバッファを返す。
+すでに開いているプロジェクトバッファは、未保存の変更も検索できるよう
+候補へ含める。"
+    (let* ((source-buffer (current-buffer))
+           (open-buffers
+            (seq-filter #'buffer-file-name
+                        (projectile-project-buffers project-root)))
+           (matching-files
+            (projectile-files-with-string from project-root))
+           (matching-buffers
+            (mapcar #'find-file-noselect matching-files)))
+      (delete-dups
+       (append (when (memq source-buffer open-buffers)
+                 (list source-buffer))
+               open-buffers
+               matching-buffers))))
+
+  (defun my-project-query-replace-separator (input)
+    "Consult形式のINPUTにある2つ目の区切り位置を返す。"
+    (when (and (string-prefix-p "#" input)
+               (string-match "#" input 1))
+      (match-beginning 0)))
+
+  (defun my-project-query-replace-parse-input (input)
+    "INPUTをConsult形式の検索語と除外語に分ける。
+`#SEARCH#!EXCLUDE' 形式だけを特別扱いし、それ以外は通常の検索語とする。"
+    (if-let ((separator (my-project-query-replace-separator input)))
+        (let* ((search (substring input 1 separator))
+               (filter (string-trim (substring input (1+ separator)))))
+          (cond
+           ((string-empty-p filter)
+            (list search nil))
+           ((string-prefix-p "!" filter)
+            (let ((exclude (substring filter 1)))
+              (when (string-empty-p exclude)
+                (user-error "除外する文字列を入力してください"))
+              (list search exclude)))
+           (t
+            (user-error
+             "置換では #検索語#!除外語 の形式を使用してください"))))
+      (list input nil)))
+
+  (defvar-local my-project-query-replace-input-overlays nil
+    "プロジェクト置換の入力構文を色付けするオーバーレイ。")
+
+  (defun my-project-query-replace-clear-input-highlights ()
+    "プロジェクト置換の入力欄から構文の色付けを消す。"
+    (setq my-project-query-replace-input-overlays
+          (my/delete-overlays my-project-query-replace-input-overlays)))
+
+  (defun my-project-query-replace-highlight-input ()
+    "`#検索語#!除外語' の区切り記号をConsultと同じ色で表示する。"
+    (my-project-query-replace-clear-input-highlights)
+    (let* ((beg (minibuffer-prompt-end))
+           (input (buffer-substring-no-properties beg (point-max)))
+           (separator (my-project-query-replace-separator input)))
+      (when (string-prefix-p "#" input)
+        (let ((positions (list 0)))
+          (when separator
+            (push separator positions)
+            (when (and (< (1+ separator) (length input))
+                       (eq (aref input (1+ separator)) ?!))
+              (push (1+ separator) positions)))
+          (dolist (position positions)
+            (let ((overlay (make-overlay (+ beg position)
+                                         (+ beg position 1))))
+              (overlay-put overlay 'face 'consult-async-split)
+              (overlay-put overlay 'evaporate t)
+              (push overlay my-project-query-replace-input-overlays)))))))
+
+  (defun my-project-query-replace-minibuffer-setup ()
+    "プロジェクト置換の検索語入力用にミニバッファを設定する。"
+    (deactivate-input-method)
+    (my-project-query-replace-highlight-input)
+    (add-hook 'post-command-hook
+              #'my-project-query-replace-highlight-input nil t)
+    (add-hook 'minibuffer-exit-hook
+              #'my-project-query-replace-clear-input-highlights nil t))
+
+  (defun my-project-query-replace ()
+    "プロジェクト全体を前後に循環できる操作で文字列置換する。
+検索語は `#SEARCH#!EXCLUDE' というConsult形式でも入力できる。"
+    (interactive)
+    (let ((project-root (projectile-acquire-root)))
+      (pcase-let ((`(,from ,to ,exclude)
+                   (my-query-replace-read-args
+                    "Project query replace" nil
+                    #'my-project-query-replace-parse-input
+                    #'my-project-query-replace-minibuffer-setup)))
+        (my/cyclic-query-replace
+         from to
+         (my-project-query-replace-buffers from project-root)
+         project-root
+         exclude))))
 
   :custom
   (projectile-project-root-files '(".project" ".git" "compile_commands.json"))
@@ -151,14 +625,61 @@
   :hook (prog-mode . projectile-mode)
   :bind (("C-c p" . projectile-command-map)
          :map projectile-command-map
-         ("RET" . tab-switch)
+         ("RET" . my-tabspaces-switch-project-tab)
+         ("r" . my-project-query-replace)
+         ("s" . consult-ripgrep)
          ;; tabspacesで管理している次のプロジェクトタブへ移動する。
-         ("o" . tab-next))
+         ("o" . my-tabspaces-next-project-tab))
   )
 
 ;; プロジェクトごとにバッファとウィンドウ構成を分ける。
 (use-package tabspaces
   :after projectile
+
+  :preface
+  (defun my-tabspaces-project-tabs ()
+    "現在開いているプロジェクトタブを表示順で返す。"
+    (let ((project-tab-names
+           (mapcar #'cdr tabspaces-project-tab-map)))
+      (seq-filter
+       (lambda (tab)
+         (member (alist-get 'name tab) project-tab-names))
+       (tab-bar-tabs))))
+
+  (defun my-tabspaces-project-tab-names ()
+    "現在開いているプロジェクトタブ名を表示順で返す。"
+    (mapcar (lambda (tab) (alist-get 'name tab))
+            (my-tabspaces-project-tabs)))
+
+  (defun my-tabspaces-switch-project-tab ()
+    "現在開いているプロジェクトタブだけを候補にして移動する。"
+    (interactive)
+    (let ((names (my-tabspaces-project-tab-names)))
+      (unless names
+        (user-error "開いているプロジェクトタブがありません"))
+      (tab-bar-switch-to-tab
+       (completing-read "Project tab: " names nil t))))
+
+  (defun my-tabspaces-next-project-tab ()
+    "通常タブを飛ばし、次のプロジェクトタブへ循環移動する。"
+    (interactive)
+    (let* ((tabs (tab-bar-tabs))
+           (project-tab-names (my-tabspaces-project-tab-names))
+           (current-index
+            (cl-position-if
+             (lambda (tab) (eq (car tab) 'current-tab)) tabs))
+           (tab-count (length tabs))
+           (next-name
+            (cl-loop for offset from 1 to tab-count
+                     for tab = (nth (mod (+ current-index offset) tab-count)
+                                    tabs)
+                     for name = (alist-get 'name tab)
+                     when (member name project-tab-names)
+                     return name)))
+      (unless next-name
+        (user-error "開いているプロジェクトタブがありません"))
+      (tab-bar-switch-to-tab next-name)))
+
   :custom
   (tabspaces-keymap-prefix "C-c TAB")
   (tabspaces-default-tab "Default")
@@ -189,28 +710,22 @@
 
 ;; vterm
 (use-package vterm
-  :bind (
-	 ("M-[" . vterm)
-	 )
-  :config
-  (setq vterm-keymap-exceptions '("<f1>" "M-[" "M-]" "C-c" "C-x" "C-u" "C-g" "C-l" "C-t" "M-x" "M-o" "C-v" "M-v" "C-y" "M-y"))
-  (setq vterm-max-scrollback 10000)
-  (setq vterm-buffer-name-string "vterm: %s")
-  (define-key vterm-mode-map (kbd "C-t") 'other-window-or-split)
-  (define-key vterm-mode-map (kbd "C-h") 'vterm-send-backspace)
-  )
+  :bind (("M-[" . vterm)
+         :map vterm-mode-map
+         ("C-t" . other-window-or-split)
+         ("C-h" . vterm-send-backspace))
+  :custom
+  (vterm-keymap-exceptions
+   '("<f1>" "M-[" "M-]" "C-c" "C-x" "C-u" "C-g" "C-l"
+     "C-t" "M-x" "M-o" "C-v" "M-v" "C-y" "M-y"))
+  (vterm-max-scrollback 10000)
+  (vterm-buffer-name-string "vterm: %s"))
 
 ;; PDF (DocView)
 (use-package doc-view
   :ensure nil
   :bind (:map doc-view-mode-map
               ("C-t" . other-window-or-split)))
-
-;;    +---------------------------------------------+
-;;    |                  Key Config                 |
-;;    +---------------------------------------------+
-;; (define-key vterm-mode-map (kbd "C-t") 'other-window-or-split)
-;; ;;(define-key dired-mode-map (kbd "f8") 'toggle-frame-fullscreen)
 
 ;;; Theme
 (use-package doom-themes
@@ -219,14 +734,26 @@
   (doom-themes-enable-bold t)
   :custom-face
   (doom-modeline-bar ((t (:background "#6272a4"))))
+  ;; 現在の検索・置換候補はピンク、ほかの候補と通常選択は青にする。
+  (query-replace
+   ((t (:inherit nil :foreground "#e0f7ff" :background "#8a145c"
+         :weight bold :box (:line-width 2 :color "#ff69b4")))))
+  (isearch
+   ((t (:inherit nil :foreground "#e0f7ff" :background "#8a145c"
+         :weight bold :box (:line-width 2 :color "#ff69b4")))))
+  (lazy-highlight
+   ((t (:inherit nil :foreground "#e0f7ff" :background "#164e63"
+         :weight bold :box (:line-width 1 :color "#38bdf8")))))
+  (region
+   ((t (:inherit nil :foreground unspecified :background "#164e63"
+         :box nil :extend t))))
   :config
+  (load-theme 'doom-outrun-electric t)
   (doom-themes-neotree-config)
   (doom-themes-org-config))
 
 (use-package all-the-icons
-  :if (display-graphic-p)
-  ;; :init (all-the-icons-install-fonts t)
-  )
+  :if (display-graphic-p))
 
 (use-package doom-modeline
   :custom
@@ -234,15 +761,13 @@
   (doom-modeline-icon t)
   (doom-modeline-major-mode-icon nil)
   (doom-modeline-minor-modes nil)
+  (display-time-24hr-format t)
   :hook
   (after-init . doom-modeline-mode)
   :config
   (line-number-mode t)
   (column-number-mode t)
-  ;; (display-battery-mode t)
-  (setq display-time-24hr-format t)
-  (display-time-mode t)
-  )
+  (display-time-mode t))
 
 (use-package rainbow-delimiters
   :hook (prog-mode . rainbow-delimiters-mode))
@@ -274,27 +799,6 @@
 ;; Pythonの仮想環境のパスを追加
 (use-package pyvenv
   :hook (python-mode . pyvenv-track-virtualenv))
-
-;; (with-eval-after-load 'eglot
-;;   (add-to-list 'eglot-server-programs
-;;                '(python-mode . ("pyright-langserver" "--stdio"))))
-
-;; (use-package treesit-auto
-;; :hook (
-;; 	 (c++-mode-hook . tree-sitter-hl-mode)
-;; 	 )
-;;   :config
-;;   (setq treesit-auto-install t)
-;;   (global-treesit-auto-mode)
-;;   (setq treesit-font-lock-level 4))
-(use-package org
-  :ensure nil
-  :config
-  (setq browse-url-browser-function 'eww-browse-url) ;; orgリンクをewwで開く
-)
-
-;; (use-package org-modern
-;;   :hook (org-mode . org-modern-mode))
 
 (use-package markdown-mode
   :mode ("\\.md\\'" . markdown-mode)
@@ -419,8 +923,13 @@ Otherwise, use the region as the initial alt text."
   ;; (add-to-list 'default-frame-alist
   ;;              '(alpha 1 1)))
   
-  (setq inhibit-startup-message t)
-  (setq frame-title-format "%f")
+  (setq inhibit-startup-message t
+        frame-title-format "%f"
+        custom-file (expand-file-name "custom.el" user-emacs-directory)
+        make-backup-files nil
+        auto-save-default nil
+        ring-bell-function #'ignore
+        initial-scratch-message nil)
   ;; (global-display-line-numbers-mode t)
   (tool-bar-mode 0)
   (menu-bar-mode 0)
@@ -431,21 +940,11 @@ Otherwise, use the region as the initial alt text."
   (keymap-set resize-window-repeat-map "{" #'enlarge-window-horizontally)
   (keymap-set resize-window-repeat-map "}" #'shrink-window-horizontally)
   
-  (setq custom-file (expand-file-name "custom.el" user-emacs-directory))
   (when (file-exists-p custom-file)
     (load custom-file))
 
-  (setq make-backup-files nil)
-  (setq auto-save-default nil)
-  (setq ring-bell-function 'ignore)
   (defalias 'yes-or-no-p 'y-or-n-p)
-  
-  ;; scratch buffer
-  (setq initial-scratch-message nil)
-  (add-hook 'asm-mode-hook
-          (lambda ()
-            (setq asm-indent-level 4)
-            (setq indent-line-function #'my-asm-indent-line)))
+  (add-hook 'asm-mode-hook #'my-asm-mode-setup)
   ;; 通常起動時だけサーバーを開始する。デーモンや既存サーバーとは重複させない。
   (require 'server)
   (unless (or (daemonp) (server-running-p))
@@ -473,8 +972,6 @@ Otherwise, use the region as the initial alt text."
    ((t (:foreground "#7fbf7f"))))
   (font-lock-doc-face
    ((t (:foreground "#7fbf7f"))))
-  :config
-  (load-theme 'doom-outrun-electric t)
   )
 ;;; ------------------------------------------------------------------
 ;;; 自作関数
@@ -486,39 +983,39 @@ Otherwise, use the region as the initial alt text."
       (indent-line-to 0)
     (indent-line-to asm-indent-level)))
 
+(defun my-asm-mode-setup ()
+  "アセンブリ用のインデント設定を適用する。"
+  (setq-local asm-indent-level 4
+              indent-line-function #'my-asm-indent-line))
+
 (defvar my-smart-jump-state nil
   "Stores state for smart beginning/end of line navigation.")
+
+(defun my-smart-line-boundary (command move-line buffer-boundary)
+  "COMMANDを連打して行端、BUFFER-BOUNDARY、元の位置へ移動する。
+MOVE-LINEは行頭または行末へ移動する関数である。"
+  (cond
+   ((not (eq last-command command))
+    (setq my-smart-jump-state (list :origin (point) :step 1))
+    (funcall move-line 1))
+   ((= (plist-get my-smart-jump-state :step) 1)
+    (plist-put my-smart-jump-state :step 2)
+    (goto-char (funcall buffer-boundary)))
+   (t
+    (goto-char (plist-get my-smart-jump-state :origin))
+    (setq this-command nil))))
 
 (defun my-smart-beginning-of-line ()
   "Toggle between beginning of line, beginning of buffer, and original point."
   (interactive)
-  (cond
-   ;; 1回目: 行頭へ移動し、元の位置を保存
-   ((not (eq last-command 'my-smart-beginning-of-line))
-    (setq my-smart-jump-state (list :origin (point) :step 1))
-    (move-beginning-of-line 1))
-   ;; 2回目: バッファ先頭へ
-   ((= (plist-get my-smart-jump-state :step) 1)
-    (plist-put my-smart-jump-state :step 2)
-    (goto-char (point-min)))
-   ;; 3回目: 元の位置へ戻る
-   (t
-    (goto-char (plist-get my-smart-jump-state :origin))
-    (setq this-command nil)))) ; 状態リセット
+  (my-smart-line-boundary
+   'my-smart-beginning-of-line #'move-beginning-of-line #'point-min))
 
 (defun my-smart-end-of-line ()
   "Toggle between end of line, end of buffer, and original point."
   (interactive)
-  (cond
-   ((not (eq last-command 'my-smart-end-of-line))
-    (setq my-smart-jump-state (list :origin (point) :step 1))
-    (move-end-of-line 1))
-   ((= (plist-get my-smart-jump-state :step) 1)
-    (plist-put my-smart-jump-state :step 2)
-    (goto-char (point-max)))
-   (t
-    (goto-char (plist-get my-smart-jump-state :origin))
-    (setq this-command nil))))
+  (my-smart-line-boundary
+   'my-smart-end-of-line #'move-end-of-line #'point-max))
 
 (defun other-window-or-split ()
   "Move to the next window, splitting horizontally when only one exists."
@@ -549,6 +1046,7 @@ Otherwise, use the region as the initial alt text."
 
 (use-package ddskk
   :ensure t
+  :demand t
 
   :preface
   (defun my-ddskk-setup-color-cursor-for-frame (frame)
@@ -559,45 +1057,82 @@ Otherwise, use the region as the initial alt text."
         (when (bound-and-true-p skk-mode)
           (skk-cursor-set)))))
 
+  (defvar-local my-ddskk-default-input-initialized nil
+    "このバッファでDDSKKの初期入力モードを設定済みなら非nil。")
+
+  (defconst my-ddskk-rom-kana-rules
+    '(("!" nil "!")
+      ("?" nil "?")
+      (":" nil ":")
+      (";" nil ";")
+      ("(" nil "(")
+      (")" nil ")")
+      ("[" nil "「")
+      ("]" nil "」")
+      ("{" nil "{")
+      ("}" nil "}")
+      ("'" nil "'")
+      ("\"" nil "\""))
+    "DDSKKで日本語入力中も半角のまま入力する記号。")
+
+  (defun my-ddskk-start-buffer-in-latin-mode ()
+    "通常バッファの入力方式をDDSKK英字モードで初期化する。"
+    (when (and (not (minibufferp))
+               (not (string-prefix-p " " (buffer-name)))
+               (not (derived-mode-p 'special-mode))
+               (not my-ddskk-default-input-initialized))
+      (setq my-ddskk-default-input-initialized t)
+      (cond
+       ((null current-input-method)
+        (activate-input-method "japanese-skk")
+        (skk-latin-mode 1))
+       ;; ファイルのメジャーモード設定時に `current-input-method' だけが
+       ;; 残り、DDSKKのバッファローカルな状態が消える場合は再初期化する。
+       ((and (equal current-input-method "japanese-skk")
+             (not (bound-and-true-p skk-mode)))
+        (deactivate-input-method)
+        (activate-input-method "japanese-skk")
+        (skk-latin-mode 1)))))
+
   :init
   (setq default-input-method "japanese-skk")
+  :bind ("C-x j" . toggle-input-method)
+  :hook
+  ((after-change-major-mode . my-ddskk-start-buffer-in-latin-mode)
+   (buffer-list-update . my-ddskk-start-buffer-in-latin-mode))
   :config
-  ;; 個人辞書
-  (global-set-key (kbd "C-x j") 'toggle-input-method)
-  (setq skk-jisyo "~/.skk-jisyo")
-  ;; DDSKK標準のカーソル色変更機能を使う
-  (setq skk-use-color-cursor t)
-  (setq skk-cursor-latin-color "lightskyblue")
-  (setq skk-cursor-hiragana-color "lightpink")
-  (setq skk-cursor-katakana-color "lightgreen")
-  ;; デーモン起動時はGUI生成後にカーソル色管理を初期化する。
+  ;; このフックだけは名前が `-hook' で終わらないため明示的に登録する。
   (add-hook 'after-make-frame-functions
             #'my-ddskk-setup-color-cursor-for-frame)
+  (setq skk-jisyo "~/.skk-jisyo"
+        ;; DDSKK標準のカーソル色変更機能を使う。
+        skk-use-color-cursor t
+        skk-cursor-latin-color "lightskyblue"
+        skk-cursor-hiragana-color "lightpink"
+        skk-cursor-katakana-color "lightgreen"
+        ;; 変換候補をインライン表示する。
+        skk-show-inline t
+        skk-kutouten-type 'jp)
+  ;; この設定より前に作られた起動直後のバッファにも適用する。
+  (my-ddskk-start-buffer-in-latin-mode)
   ;; 設定を再評価した場合は、既存のGUIフレームにも反映する。
   (dolist (frame (frame-list))
     (my-ddskk-setup-color-cursor-for-frame frame))
-  ;; 変換候補をインライン表示
-  (setq skk-show-inline t)
-  ;; 句読点
-  (setq skk-kutouten-type 'jp)
+  ;; 再評価しても同じキーの規則を重複させない。
   (setq skk-rom-kana-rule-list
         (append
-         '(("!" nil "!")
-           ("?" nil "?")
-           (":" nil ":")
-           (";" nil ";")
-           ("(" nil "(")
-           (")" nil ")")
-           ("[" nil "「")
-           ("]" nil "」")
-           ("{" nil "{")
-           ("}" nil "}")
-           ("'" nil "'")
-           ("\"" nil "\""))
-         skk-rom-kana-rule-list)))
+         my-ddskk-rom-kana-rules
+         (cl-remove-if
+          (lambda (rule)
+            (assoc (car rule) my-ddskk-rom-kana-rules))
+          skk-rom-kana-rule-list))))
 
 (use-package org
   :ensure nil
+
+  :init
+  ;; OrgリンクはEmacs内のewwで開く。
+  (setq browse-url-browser-function #'eww-browse-url)
 
   :preface
   ;; PlantUMLだけBabel実行時の確認を省略する。
@@ -625,15 +1160,9 @@ Otherwise, use the region as the initial alt text."
    'org-babel-load-languages
    '((plantuml . t)))
 
-  ;; 設定を再評価してもadviceを重複登録しない。
-  (unless
-      (advice-member-p
-       #'my-org-redisplay-inline-images
-       #'org-babel-execute-src-block)
-    (advice-add
-     #'org-babel-execute-src-block
-     :after
-     #'my-org-redisplay-inline-images)))
+  (my/advice-add-once
+   #'org-babel-execute-src-block :after
+   #'my-org-redisplay-inline-images))
 
 
 (use-package plantuml-mode
@@ -742,7 +1271,7 @@ Otherwise, use the region as the initial alt text."
         (gptel-make-openai-oauth "OpenAI-sub")))
 
 ;;    +---------------------------------------------+
-;;    |                Agetn Config                 |
+;;    |                Agent Config                 |
 ;;    +---------------------------------------------+
 (use-package agent-shell
   :ensure t
@@ -782,22 +1311,19 @@ Otherwise, use the region as the initial alt text."
     "Agent Shellの承認中だけDDSKKをASCIIモードにする。"
     (pcase (map-elt event :event)
       ('permission-request
-       (when (and (bound-and-true-p skk-mode)
-                  (bound-and-true-p skk-j-mode)
-                  (null my-agent-shell-skk-mode-before-permission))
-         (setq my-agent-shell-skk-mode-before-permission
-               (if (bound-and-true-p skk-katakana)
-                   'katakana
-                 'hiragana))
-         ;; yや!をSKKで変換せず、承認ボタンに渡す。
-         (skk-latin-mode 1)))
+       (let ((state (my/ddskk-current-state)))
+         (when (and (memq state '(hiragana katakana))
+                    (null my-agent-shell-skk-mode-before-permission))
+           (setq my-agent-shell-skk-mode-before-permission state)
+           ;; yや!をSKKで変換せず、承認ボタンに渡す。
+           (skk-latin-mode 1))))
       ('permission-response
        ;; 複数の承認がある場合は、最後の回答後に戻す。
        (when (and my-agent-shell-skk-mode-before-permission
                   (not (agent-shell--permission-pending-p)))
          (let ((mode my-agent-shell-skk-mode-before-permission))
            (setq my-agent-shell-skk-mode-before-permission nil)
-           (skk-j-mode-on (eq mode 'katakana)))))))
+           (my/ddskk-restore-state mode))))))
 
   (defun my-agent-shell-setup-skk-permission-handling ()
     "Agent Shellの承認イベントにDDSKK切り替え処理を登録する。"
@@ -838,25 +1364,18 @@ Otherwise, use the region as the initial alt text."
   ;; 起動時に選択範囲やカーソル行などをプロンプトへ自動挿入しない。
   (agent-shell-context-sources nil)
   ;; 起動時に全ての履歴を表示する。
-  :custom
   (agent-shell-session-restore-verbosity 'last)
 
   :config
   ;; mode hookはバッファ表示前に走るため、表示後にカーソル色を更新する。
-  (unless (advice-member-p
-           #'my-agent-shell-refresh-skk-cursor-after-display
-           #'agent-shell--display-buffer)
-    (advice-add #'agent-shell--display-buffer
-                :after #'my-agent-shell-refresh-skk-cursor-after-display))
+  (my/advice-add-once
+   #'agent-shell--display-buffer :after
+   #'my-agent-shell-refresh-skk-cursor-after-display)
 
   ;; 読み込み後に既存履歴を修復し、保存前にも同じ形式へ統一する。
-  (unless (advice-member-p
-           #'my-agent-shell-normalize-history
-           #'shell-maker--read-input-ring-history)
-    (advice-add #'shell-maker--read-input-ring-history
-                :after #'my-agent-shell-normalize-history))
-  (unless (advice-member-p
-           #'my-agent-shell-normalize-history
-           #'shell-maker--write-input-ring-history)
-    (advice-add #'shell-maker--write-input-ring-history
-                :before #'my-agent-shell-normalize-history)))
+  (my/advice-add-once
+   #'shell-maker--read-input-ring-history :after
+   #'my-agent-shell-normalize-history)
+  (my/advice-add-once
+   #'shell-maker--write-input-ring-history :before
+   #'my-agent-shell-normalize-history))
